@@ -1,0 +1,73 @@
+name: Repair split Claude marketplace catalogs
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/repair-split-marketplace-catalogs.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  regenerate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Regenerate both catalogs from the original manifest
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          source_path = Path(".claude-plugin/marketplace.json")
+          source = json.loads(source_path.read_text(encoding="utf-8-sig"))
+          plugins = source["plugins"]
+
+          chunk_size = 1900
+          if len(plugins) != 2280:
+              raise SystemExit(
+                  f"Expected 2280 source plugins, found {len(plugins)}. "
+                  "Refusing to overwrite the split catalogs."
+              )
+
+          for part, start in enumerate(range(0, len(plugins), chunk_size), start=1):
+              catalog = dict(source)
+              catalog["name"] = f"claude-community-part-{part}.json"
+              catalog["plugins"] = plugins[start:start + chunk_size]
+
+              output = Path(
+                  f"marketplaces/community-part-{part}/.claude-plugin/marketplace.json"
+              )
+              output.parent.mkdir(parents=True, exist_ok=True)
+              output.write_text(
+                  json.dumps(catalog, ensure_ascii=False, indent=2) + "\n",
+                  encoding="utf-8",
+                  newline="\n",
+              )
+              print(f"{output}: {len(catalog['plugins'])} plugins; name={catalog['name']}")
+
+          print(f"Validated source total: {len(plugins)} plugins")
+          PY
+
+      - name: Commit regenerated catalogs
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add marketplaces/community-part-1/.claude-plugin/marketplace.json
+          git add marketplaces/community-part-2/.claude-plugin/marketplace.json
+          if git diff --cached --quiet; then
+            echo "Catalogs already match the clean source."
+          else
+            git commit -m "Fix marketplace catalog encoding and URL names"
+            git push
+          fi
